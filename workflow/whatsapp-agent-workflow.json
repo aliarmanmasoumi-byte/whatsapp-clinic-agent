@@ -1,0 +1,839 @@
+{
+  "name": "Bayton WhatsApp Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ENTRY + VALIDATION\n\nMirrors the voice workflow: everything enters here,\ngets normalised and gated BEFORE the brain sees it.\n\n`Parse message` pulls wa_id / text / profile name out of\nthe Meta Cloud API payload and stamps Madrid local time.\n\nNon-text messages (audio, image, sticker, status callbacks)\nare answered with a polite \"please write it\" and never\nreach the agent.",
+        "height": 460,
+        "width": 920,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1344,
+        240
+      ],
+      "id": "sticky-0",
+      "name": "Sticky 0"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "messages"
+        ],
+        "options": {}
+      },
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1280,
+        400
+      ],
+      "id": "whatsapp-trigger",
+      "name": "WhatsApp Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise the Meta Cloud API payload into one flat object.\n// Timezone-safe via Luxon in Europe/Madrid, same convention as the voice workflow.\nconst TZ = 'Europe/Madrid';\nconst now = DateTime.now().setZone(TZ);\n\nconst body = $json.body ?? $json;\nconst value = body?.entry?.[0]?.changes?.[0]?.value ?? body;\nconst msg = value?.messages?.[0] ?? {};\nconst contact = value?.contacts?.[0] ?? {};\n\n// Mon-Thu 10-20, Fri 10-14, closed Sat/Sun (Luxon: 1=Mon ... 7=Sun).\nconst OPEN = { 1: [10, 20], 2: [10, 20], 3: [10, 20], 4: [10, 20], 5: [10, 14] };\nconst todays = OPEN[now.weekday];\nconst isOpen = !!todays && now.hour >= todays[0] && now.hour < todays[1];\n\nreturn [{\n  json: {\n    wa_id: msg.from ?? contact.wa_id ?? null,\n    message_id: msg.id ?? null,\n    type: msg.type ?? 'unknown',\n    text: msg.text?.body ?? msg.button?.text ?? msg.interactive?.list_reply?.title ?? '',\n    profile_name: contact.profile?.name ?? null,\n    // Injected into the system prompt so the agent never guesses the date.\n    now_madrid: now.toISO({ suppressMilliseconds: true }),\n    now_human: now.setLocale('es').toFormat(\"cccc d 'de' LLLL, HH:mm\"),\n    clinic_is_open: isOpen\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        400
+      ],
+      "id": "parse-message",
+      "name": "Parse message"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "is-text",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "text",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "has-body",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -800,
+        400
+      ],
+      "id": "is-a-text-message-",
+      "name": "Is a text message?"
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "textBody": "=Disculpe, por ahora solo puedo leer mensajes de texto. Me lo puede escribir?\n\nSorry, I can only read text messages for now. Could you write it instead?",
+        "additionalFields": {},
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        620
+      ],
+      "id": "respond-unsupported-type",
+      "name": "Respond Unsupported Type"
+    },
+    {
+      "parameters": {
+        "content": "## BRAIN\n\nThe voice workflow's Switch is replaced by an AI Agent:\nsame six actions, chosen by the model instead of by a\nstring comparison.\n\nMemory is keyed on wa_id so each patient has one\ncontinuous thread. A phone call is one session; a\nWhatsApp chat is forever.\n\nPASTE THE PROMPT into the systemMessage field ->\n02_prompts/whatsapp_agent_prompt_v1.txt",
+        "height": 460,
+        "width": 780,
+        "color": 1
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        240
+      ],
+      "id": "sticky-5",
+      "name": "Sticky 5"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "={{ $json.clinic_is_open ? '' : '[LA CLINICA ESTA CERRADA AHORA MISMO / THE CLINIC IS CLOSED RIGHT NOW]\\n' }}Ahora en Madrid: {{ $json.now_human }} ({{ $json.now_madrid }}).\nTelefono del paciente (ya lo tienes, NO lo preguntes): {{ $json.wa_id }}\nNombre de perfil de WhatsApp (solo una pista, confirmalo): {{ $json.profile_name }}\n\n--- PEGA AQUI EL PROMPT ---\nCopia el contenido de 02_prompts/whatsapp_agent_prompt_v1.txt debajo de\nestas lineas antes de activar el workflow."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -160,
+        400
+      ],
+      "id": "ai-agent",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini"
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -304,
+        620
+      ],
+      "id": "openai-chat-model",
+      "name": "OpenAI Chat Model"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.wa_id }}",
+        "tableName": "whatsapp_chat_memory",
+        "contextWindowLength": 20
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        -16,
+        620
+      ],
+      "id": "postgres-chat-memory",
+      "name": "Postgres Chat Memory"
+    },
+    {
+      "parameters": {
+        "content": "## AVAILABILITY\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.",
+        "height": 300,
+        "width": 528,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        -624
+      ],
+      "id": "sticky-9",
+      "name": "Sticky 9"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Check whether one exact date and time is free. Use when the patient names a specific time. Returns is_available true/false.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"availability\",\"required_time\":\"{required_time}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "required_time",
+              "description": "Madrid local time, no timezone offset, e.g. 2026-08-26T16:30:00",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        -500
+      ],
+      "id": "availability",
+      "name": "availability"
+    },
+    {
+      "parameters": {
+        "content": "## BOOKING\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.\n\nReturns a 4-digit appointment_id - always give it\nto the patient.",
+        "height": 340,
+        "width": 528,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        -336
+      ],
+      "id": "sticky-11",
+      "name": "Sticky 11"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Book the appointment. ONLY call this once the patient has actually told you the name, email and service. Never invent any value. Returns a 4-digit appointment_id.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"book\",\"name\":\"{name}\",\"Email\":\"{Email}\",\"phone\":\"{phone}\",\"service\":\"{service}\",\"booking_time\":\"{booking_time}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "name",
+              "description": "Full name exactly as the patient wrote it. Never invent it.",
+              "type": "string"
+            },
+            {
+              "name": "Email",
+              "description": "Email exactly as the patient wrote it. Never invent it.",
+              "type": "string"
+            },
+            {
+              "name": "phone",
+              "description": "The wa_id from the system prompt - the patient never types this.",
+              "type": "string"
+            },
+            {
+              "name": "service",
+              "description": "What the patient asked for, in their own words. Never invent it.",
+              "type": "string"
+            },
+            {
+              "name": "booking_time",
+              "description": "Madrid local time, no timezone offset, e.g. 2026-08-26T16:30:00",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "appointment",
+      "name": "appointment"
+    },
+    {
+      "parameters": {
+        "content": "## RESCHEDULE\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.\n\nNo email or phone needed - name + old time\n(+ 4-digit code if they have it).",
+        "height": 340,
+        "width": 528,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        112
+      ],
+      "id": "sticky-13",
+      "name": "Sticky 13"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Move an existing appointment to a new time. Check the new time with availability first.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"reschedule\",\"name\":\"{name}\",\"booking_time\":\"{booking_time}\",\"new_time\":\"{new_time}\",\"appointment_code\":\"{appointment_code}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "name",
+              "description": "Name the appointment was booked under.",
+              "type": "string"
+            },
+            {
+              "name": "booking_time",
+              "description": "The ORIGINAL Madrid local time of the appointment.",
+              "type": "string"
+            },
+            {
+              "name": "new_time",
+              "description": "The NEW Madrid local time.",
+              "type": "string"
+            },
+            {
+              "name": "appointment_code",
+              "description": "Their 4-digit code if they have it, otherwise leave empty.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        248
+      ],
+      "id": "reschedule",
+      "name": "reschedule"
+    },
+    {
+      "parameters": {
+        "content": "## CANCEL\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.",
+        "height": 300,
+        "width": 528,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        560
+      ],
+      "id": "sticky-15",
+      "name": "Sticky 15"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Cancel an existing appointment. Confirm once with the patient before calling this.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"canceling\",\"name\":\"{name}\",\"booking_time\":\"{booking_time}\",\"appointment_code\":\"{appointment_code}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "name",
+              "description": "Name the appointment was booked under.",
+              "type": "string"
+            },
+            {
+              "name": "booking_time",
+              "description": "Madrid local time of the appointment to cancel.",
+              "type": "string"
+            },
+            {
+              "name": "appointment_code",
+              "description": "Their 4-digit code if they have it, otherwise leave empty.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        684
+      ],
+      "id": "canceling",
+      "name": "canceling"
+    },
+    {
+      "parameters": {
+        "content": "## SUGGESTIONS\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.\n\nsuggesting  = around a time they asked for\nsuggesting2 = soonest available, or after DAY_FULL",
+        "height": 460,
+        "width": 528
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        1008
+      ],
+      "id": "sticky-17",
+      "name": "Sticky 17"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Offer two free slots around a time that turned out to be taken.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"suggesting\",\"required_time\":\"{required_time}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "required_time",
+              "description": "The Madrid local time they originally wanted.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        1140
+      ],
+      "id": "suggesting",
+      "name": "suggesting"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Offer the soonest free slots. Use for \"what do you have?\" and after a DAY_FULL result.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"suggesting2\",\"local_time\":\"{local_time}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "local_time",
+              "description": "Current Madrid local time, from the system prompt.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        1320
+      ],
+      "id": "suggesting2",
+      "name": "suggesting2"
+    },
+    {
+      "parameters": {
+        "content": "## WAITLIST\n\nThin HTTP call into the EXISTING booking webhook.\nNo calendar logic is duplicated here - the voice\nworkflow stays the single source of truth.\n\nOffer ONCE, only after they booked a different slot.",
+        "height": 320,
+        "width": 528
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        1568
+      ],
+      "id": "sticky-20",
+      "name": "Sticky 20"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Add the patient to the waitlist for a time that was taken. Offer only once, and only after a different slot was booked.",
+        "method": "POST",
+        "url": "${N8N_URL}/webhook/<WEBHOOK_PATH>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-token",
+              "value": "<WEBHOOK_TOKEN>"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"args\":{\"action\":\"waitlist_add\",\"desired_time\":\"{desired_time}\",\"name\":\"{name}\",\"Email\":\"{Email}\",\"phone\":\"{phone}\",\"appointment_code\":\"{appointment_code}\"}}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "desired_time",
+              "description": "The Madrid local time they originally wanted.",
+              "type": "string"
+            },
+            {
+              "name": "name",
+              "description": "Same name as the booking just made.",
+              "type": "string"
+            },
+            {
+              "name": "Email",
+              "description": "Same email as the booking just made.",
+              "type": "string"
+            },
+            {
+              "name": "phone",
+              "description": "The wa_id from the system prompt.",
+              "type": "string"
+            },
+            {
+              "name": "appointment_code",
+              "description": "The 4-digit code of the booking just made.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        1700
+      ],
+      "id": "waitlist-add",
+      "name": "waitlist_add"
+    },
+    {
+      "parameters": {
+        "content": "## REPLY\n\nOne outbound message per turn, back to the same wa_id.\n\nWhatsApp has no \"forwarding\" - if the clinic must see\nthis conversation, that is Chatwoot later.\nSee 00_START_HERE.md.",
+        "height": 380,
+        "width": 528,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        240
+      ],
+      "id": "sticky-22",
+      "name": "Sticky 22"
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "textBody": "={{ $json.output }}",
+        "additionalFields": {},
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        1104,
+        400
+      ],
+      "id": "send-reply",
+      "name": "Send reply"
+    },
+    {
+      "parameters": {
+        "content": "## ERROR PATH\n\nSame idea as the voice workflow's error lane: never leave\nthe patient in silence, and tell a human something broke.\n\nThe voice agent transfers the call. Here there is nobody\nto transfer to, so we apologise, promise a callback, and\nalert the clinic.\n\nWire this as the workflow Error Trigger target once the\ncredentials exist.",
+        "height": 420,
+        "width": 560,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        240
+      ],
+      "id": "sticky-24",
+      "name": "Sticky 24"
+    },
+    {
+      "parameters": {
+        "sendTo": "<OWNER_EMAIL>",
+        "subject": "=[Bayton WhatsApp] Error en la conversacion con {{ $json.wa_id }}",
+        "message": "=Fallo en el workflow de WhatsApp.\n\nwa_id: {{ $json.wa_id }}\nMensaje: {{ $json.text }}\nHora: {{ $json.now_human }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1664,
+        400
+      ],
+      "id": "alert-admin-whatsapp-error",
+      "name": "Alert Admin - WhatsApp Error"
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "textBody": "Disculpe, tenemos un problema tecnico en este momento. Le llamaremos en cuanto se resuelva.\n\nSorry, we are having a technical problem right now. We will call you back shortly.",
+        "additionalFields": {},
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        1904,
+        400
+      ],
+      "id": "respond-critical-error",
+      "name": "Respond Critical Error"
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse message": {
+      "main": [
+        [
+          {
+            "node": "Is a text message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is a text message?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unsupported Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "availability": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "appointment": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "reschedule": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "canceling": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "suggesting": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "suggesting2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "waitlist_add": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Admin - WhatsApp Error": {
+      "main": [
+        [
+          {
+            "node": "Respond Critical Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "BLUEPRINT-NOT-DEPLOYED"
+  }
+}
