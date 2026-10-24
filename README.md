@@ -6,7 +6,7 @@ slot, books it, and can reschedule or cancel later in the same thread.
 
 `WhatsApp Cloud API` · `n8n` · `gpt-4.1-mini` · `Postgres` chat memory · `Google Calendar`
 
-Live and verified end to end. Same booking backend as the [voice agent](../dental-voice-agent) —
+A demo build for a fictional clinic, verified end to end in testing; it is offline now. Same booking backend as the [voice agent](../dental-voice-agent) —
 one calendar, two front doors.
 
 ---
